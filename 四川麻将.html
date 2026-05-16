@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>四川麻将 - 血战到底/血流成河</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  display:flex;justify-content:center;align-items:center;
+  min-height:100vh;background:#f0e6d3;
+  font-family:'Microsoft YaHei','PingFang SC','KaiTi','STKaiti',sans-serif;
+  user-select:none;-webkit-user-select:none;
+}
+.game-wrap{
+  text-align:center;background:#fff9f0;
+  border-radius:20px;padding:16px 22px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.12);
+  max-width:98vw;
+}
+h1{font-size:24px;color:#5d4037;margin-bottom:8px;letter-spacing:3px}
+.top-bar{display:flex;justify-content:center;align-items:center;gap:16px;margin-bottom:8px;flex-wrap:wrap}
+.mode-btns{display:flex;gap:8px}
+.mode-btns button,.btn{
+  padding:7px 16px;border:2px solid #8d6e63;
+  border-radius:18px;cursor:pointer;
+  font-size:13px;font-weight:bold;
+  background:#fff;color:#8d6e63;
+  transition:all 0.2s;font-family:inherit;
+  touch-action:manipulation;
+}
+.mode-btns button:hover,.btn:hover{background:#efebe9}
+.mode-btns button.active{background:#8d6e63;color:#fff}
+canvas{display:block;margin:0 auto;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.1);cursor:pointer;touch-action:manipulation;max-width:100%}
+.action-bar{display:flex;gap:8px;justify-content:center;margin-top:8px;flex-wrap:wrap;min-height:38px}
+.btn.primary{background:#8d6e63;color:#fff}
+.btn.primary:hover{background:#6d4c41}
+.btn.win{background:#c62828;color:#fff;border-color:#c62828}
+.btn.win:hover{background:#b71c1c}
+.btn.claim{background:#ff8f00;color:#fff;border-color:#ff8f00}
+.btn.claim:hover{background:#ef6c00}
+.info-text{font-size:13px;color:#a1887f;margin-top:4px}
+.result-toast{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  background:rgba(0,0,0,0.85);color:#ffd54f;
+  font-size:26px;font-weight:bold;padding:16px 36px;
+  border-radius:14px;pointer-events:none;
+  opacity:0;transition:opacity 0.3s;
+  z-index:20;letter-spacing:3px;
+}
+.result-toast.show{opacity:1}
+.score-row{font-size:12px;color:#a1887f;margin-top:4px}
+.score-row span{margin:0 6px}
+</style>
+</head>
+<body>
+
+<div class="game-wrap">
+  <h1>🀄 四 川 麻 将</h1>
+  <div class="top-bar">
+    <div style="font-size:14px;color:#5d4037;font-weight:bold" id="gameInfo">血流成河 · 第1局</div>
+    <div class="mode-btns">
+      <button id="btnXueLiu" class="active">🌊 血流成河</button>
+      <button id="btnXueZhan">⚔️ 血战到底</button>
+    </div>
+  </div>
+
+  <canvas id="board"></canvas>
+
+  <div class="action-bar" id="actionBar"></div>
+
+  <div class="info-text" id="infoText">点击手牌出牌，或等待操作提示</div>
+
+  <div class="score-row">
+    🏆 你:<b id="score0">0</b>分 ·
+    AI-右:<b id="score1">0</b>分 ·
+    AI-对:<b id="score2">0</b>分 ·
+    AI-左:<b id="score3">0</b>分
+    <br>牌墙剩余: <b id="wallCount">0</b>张
+  </div>
+</div>
+
+<div class="result-toast" id="toast"></div>
+
+<script>
+// ================================================================
+//  CONSTANTS
+// ================================================================
+const SUIT_WAN = 0, SUIT_TONG = 1, SUIT_TIAO = 2;
+const SUIT_NAMES = ['万','筒','条'];
+const SUIT_START = [0, 9, 18]; // index start for each suit in 0-26
+const TOTAL_TILES = 108; // 3 suits × 9 ranks × 4 copies
+
+// ================================================================
+//  TILE UTILS
+// ================================================================
+function tileTypeId(suit, rank) { return suit * 9 + (rank - 1); } // 0-26
+function tileSuit(typeId) { return Math.floor(typeId / 9); }
+function tileRank(typeId) { return (typeId % 9) + 1; }
+function tileName(typeId) { return tileRank(typeId) + SUIT_NAMES[tileSuit(typeId)]; }
+
+function createDeck() {
+  const deck = [];
+  for (let suit = 0; suit < 3; suit++)
+    for (let rank = 1; rank <= 9; rank++)
+      for (let copy = 0; copy < 4; copy++)
+        deck.push(tileTypeId(suit, rank));
+  return deck;
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+// ================================================================
+//  WIN DETECTION (Recursive Backtracking)
+// ================================================================
+function canSplitMelds(counts, start) {
+  // Check if all counts are zero
+  let allZero = true;
+  for (let i = start; i < 27; i++) { if (counts[i] !== 0) { allZero = false; start = i; break; } }
+  if (allZero) return true;
+
+  const i = start;
+  // Try triplet
+  if (counts[i] >= 3) {
+    counts[i] -= 3;
+    if (canSplitMelds(counts, start)) { counts[i] += 3; return true; }
+    counts[i] += 3;
+  }
+  // Try sequence (only within same suit, ranks 1-7)
+  const s = tileSuit(i), r = tileRank(i);
+  if (r <= 7) {
+    const j = tileTypeId(s, r + 1), k = tileTypeId(s, r + 2);
+    if (counts[j] >= 1 && counts[k] >= 1) {
+      counts[i]--; counts[j]--; counts[k]--;
+      if (canSplitMelds(counts, start)) { counts[i]++; counts[j]++; counts[k]++; return true; }
+      counts[i]++; counts[j]++; counts[k]++;
+    }
+  }
+  return false;
+}
+
+function isWinningHand(counts) {
+  // Find all pair candidates
+  for (let i = 0; i < 27; i++) {
+    if (counts[i] >= 2) {
+      counts[i] -= 2;
+      if (canSplitMelds(counts, 0)) { counts[i] += 2; return true; }
+      counts[i] += 2;
+    }
+  }
+  return false;
+}
+
+// Check missing one suit (缺一门): at least one suit has zero tiles
+function checkMissingOneSuit(counts) {
+  let presentSuits = 0;
+  for (let s = 0; s < 3; s++) {
+    for (let r = 0; r < 9; r++) {
+      if (counts[SUIT_START[s] + r] > 0) { presentSuits++; break; }
+    }
+  }
+  return presentSuits < 3;
+}
+
+// Convert hand tiles to count array
+function handToCounts(tiles, melds) {
+  const counts = new Array(27).fill(0);
+  for (const t of tiles) counts[t]++;
+  if (melds) for (const m of melds) for (const t of m.tiles) counts[t]++;
+  return counts;
+}
+
+// Check if adding newTile to hand makes it winning
+function canWin(handTiles, melds, newTile) {
+  const combined = [...handTiles];
+  if (newTile !== null && newTile !== undefined) combined.push(newTile);
+  const counts = handToCounts(combined, melds);
+  if (!checkMissingOneSuit(counts)) return false;
+  return isWinningHand(counts);
+}
+
+// ================================================================
+//  GAME STATE
+// ================================================================
+let gameMode = 'xueliu'; // 'xueliu' | 'xuezhan'
+let wall = []; // remaining draw pile (tile type IDs)
+let players = []; // [{hand:[], melds:[{type:'pong'|'chi'|'kong', tiles:[]}], discardPile:[], missingSuit:0-2, won:false, score:0, isHuman:bool}]
+let currentPlayer = 0; // 0=human(bottom), 1=AI(right), 2=AI(top), 3=AI(left)
+let drawnTile = null; // tile just drawn by current player (not yet in hand)
+let gamePhase = 'idle'; // 'idle' | 'playing' | 'reaction' | 'gameover'
+let lastDiscard = null; // {player, tile}
+let reactionQueue = []; // [{playerIdx, actions:['hu','kong','pong','chi']}]
+let waitingForHuman = false; // is human being asked for reaction?
+let humanActionTile = null; // tile human needs to react to
+let selectedHandIdx = -1; // human's selected tile index
+let totalScores = [0, 0, 0, 0];
+let gameCount = 0;
+let skipDraw = false; // after pong/chi, player discards without drawing
+
+// ================================================================
+//  INIT
+// ================================================================
+function initPlayers() {
+  players = [];
+  const names = ['你', 'AI-右', 'AI-对', 'AI-左'];
+  for (let i = 0; i < 4; i++) {
+    players.push({
+      hand: [],
+      melds: [],
+      discardPile: [],
+      missingSuit: -1, // determined during play
+      won: false,
+      score: 0,
+      isHuman: i === 0,
+      name: names[i]
+    });
+  }
+}
+
+function dealTiles() {
+  wall = createDeck();
+  shuffle(wall);
+  for (const p of players) { p.hand = []; p.melds = []; p.discardPile = []; p.won = false; p.score = 0; p.missingSuit = -1; }
+  // Deal 13 to each, dealer (0) gets 14
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 13; j++) players[i].hand.push(wall.pop());
+  }
+  // Dealer draws 14th tile
+  currentPlayer = 0;
+  drawnTile = wall.pop();
+  // Auto dingque: pick suit with fewest tiles as missing suit
+  for (const p of players) {
+    const counts = [0, 0, 0];
+    for (const t of p.hand) counts[tileSuit(t)]++;
+    // Pick suit with minimum count (if tie, prefer lower index)
+    let minSuit = 0;
+    if (counts[1] < counts[minSuit]) minSuit = 1;
+    if (counts[2] < counts[minSuit]) minSuit = 2;
+    p.missingSuit = minSuit;
+  }
+  gamePhase = 'playing';
+  lastDiscard = null;
+  reactionQueue = [];
+  waitingForHuman = false;
+  humanActionTile = null;
+  selectedHandIdx = -1;
+}
+
+// ================================================================
+//  GAME LOGIC
+// ================================================================
+function getHandWithDrawn(playerIdx) {
+  const p = players[playerIdx];
+  const all = [...p.hand];
+  if (playerIdx === currentPlayer && drawnTile !== null) all.push(drawnTile);
+  all.sort((a, b) => a - b);
+  return all;
+}
+
+function currentHandDisplay(playerIdx) {
+  const p = players[playerIdx];
+  const hand = [...p.hand];
+  if (playerIdx === currentPlayer && drawnTile !== null) hand.push(drawnTile);
+  hand.sort((a, b) => a - b);
+  // Mark the drawn tile's position
+  return { tiles: hand, drawnIdx: drawnTile !== null && playerIdx === currentPlayer ? hand.indexOf(drawnTile) : -1 };
+}
+
+// Human: merge drawn tile into hand and select which to discard
+// Returns: discarded tile type ID
+function humanSelectDiscard(tileIdx) {
+  const hand = [...players[0].hand];
+  if (drawnTile !== null) hand.push(drawnTile);
+  hand.sort((a, b) => a - b);
+  const discard = hand[tileIdx];
+  // Remove discard from hand+drawn, set new drawn to null
+  hand.splice(tileIdx, 1);
+  players[0].hand = hand;
+  drawnTile = null;
+  return discard;
+}
+
+// AI: select which tile to discard
+function aiSelectDiscard(playerIdx) {
+  const p = players[playerIdx];
+  const hand = [...p.hand];
+  if (drawnTile !== null) hand.push(drawnTile);
+
+  // Find tiles of missing suit - prioritize discarding those
+  const missingSuitTiles = [];
+  const isolatedTiles = [];
+  const others = [];
+
+  const counts = new Array(27).fill(0);
+  for (const t of hand) counts[t]++;
+
+  for (const t of hand) {
+    if (tileSuit(t) === p.missingSuit) {
+      missingSuitTiles.push(t);
+      continue;
+    }
+    // Check if isolated (no adjacent, no same)
+    const s = tileSuit(t), r = tileRank(t);
+    let hasAdjacent = false;
+    if (r > 1 && counts[tileTypeId(s, r - 1)] > 0) hasAdjacent = true;
+    if (r < 9 && counts[tileTypeId(s, r + 1)] > 0) hasAdjacent = true;
+    if (counts[t] >= 2) hasAdjacent = true; // has pair
+    if (!hasAdjacent) isolatedTiles.push(t);
+    else others.push(t);
+  }
+
+  // Pick strategy: missing suit first, then isolated, then worst tile
+  let candidates;
+  if (missingSuitTiles.length > 0) candidates = missingSuitTiles;
+  else if (isolatedTiles.length > 0) candidates = isolatedTiles;
+  else candidates = hand;
+
+  // Pick the one that appears least in hand
+  let best = candidates[0], bestCount = 5;
+  for (const t of candidates) {
+    const c = counts[t];
+    if (c < bestCount) { bestCount = c; best = t; }
+  }
+
+  // Remove from hand+drawn
+  hand.splice(hand.indexOf(best), 1);
+  p.hand = hand;
+  drawnTile = null;
+  return best;
+}
+
+// Check reactions to a discard
+function getReactions(discarderIdx, tile) {
+  const reactions = [];
+  for (let i = 0; i < 4; i++) {
+    if (i === discarderIdx) continue;
+    // In blood battle, won players stop playing
+    if (gameMode === 'xuezhan' && players[i].won) continue;
+    const p = players[i];
+    const actions = [];
+
+    // Check 胡
+    if (canWin(p.hand, p.melds, tile)) actions.push('hu');
+
+    // Check 杠 (already have 3 in hand)
+    const counts = handToCounts(p.hand, p.melds);
+    if (counts[tile] >= 3) actions.push('kong');
+
+    // Check 碰
+    if (counts[tile] >= 2) actions.push('pong');
+
+    // Check 吃 (only from previous player)
+    if (i === (discarderIdx + 1) % 4) {
+      const s = tileSuit(tile), r = tileRank(tile);
+      if (s !== p.missingSuit) {
+        // Check left chi: (r-2, r-1) + tile
+        if (r >= 3) {
+          const a = tileTypeId(s, r - 2), b = tileTypeId(s, r - 1);
+          if (counts[a] >= 1 && counts[b] >= 1) actions.push('chi');
+        }
+        // Check middle chi: (r-1, r+1) + tile
+        if (r >= 2 && r <= 8) {
+          const a = tileTypeId(s, r - 1), b = tileTypeId(s, r + 1);
+          if (counts[a] >= 1 && counts[b] >= 1) actions.push('chi');
+        }
+        // Check right chi: tile + (r+1, r+2)
+        if (r <= 7) {
+          const a = tileTypeId(s, r + 1), b = tileTypeId(s, r + 2);
+          if (counts[a] >= 1 && counts[b] >= 1) actions.push('chi');
+        }
+      }
+    }
+
+    if (actions.length > 0) reactions.push({ playerIdx: i, actions });
+  }
+  // Sort by priority: hu > kong > pong > chi
+  reactions.sort((a, b) => {
+    const prio = { hu: 4, kong: 3, pong: 2, chi: 1 };
+    const pa = Math.max(...a.actions.map(x => prio[x] || 0));
+    const pb = Math.max(...b.actions.map(x => prio[x] || 0));
+    return pb - pa;
+  });
+  return reactions;
+}
+
+// AI reaction decision
+function aiDecideReaction(playerIdx, actions, tile) {
+  const p = players[playerIdx];
+  // 胡 always yes
+  if (actions.includes('hu')) return 'hu';
+  // 杠: do it if it improves hand
+  if (actions.includes('kong')) {
+    const counts = new Array(27).fill(0);
+    for (const t of p.hand) counts[t]++;
+    if (counts[tile] >= 3 && tileSuit(tile) !== p.missingSuit) return 'kong';
+  }
+  // 碰: do it if it helps form meld
+  if (actions.includes('pong')) {
+    const counts = new Array(27).fill(0);
+    for (const t of p.hand) counts[t]++;
+    if (counts[tile] >= 2 && tileSuit(tile) !== p.missingSuit) return 'pong';
+  }
+  // 吃: only if it clearly helps
+  if (actions.includes('chi')) {
+    if (tileSuit(tile) !== p.missingSuit) return 'chi';
+  }
+  return 'pass';
+}
+
+function performHu(playerIdx, isSelfDrawn) {
+  const p = players[playerIdx];
+  const fan = calculateFan(playerIdx);
+  p.score += fan;
+  totalScores[playerIdx] += fan;
+
+  const typeLabel = isSelfDrawn ? '自摸' : '点炮';
+  if (playerIdx === 0) showToast('🎉 你胡了！(' + typeLabel + ')+' + fan + '番');
+  else showToast('🎯 ' + p.name + ' 胡了！+' + fan + '番');
+
+  if (gameMode === 'xuezhan') {
+    p.won = true; // Won player exits
+  }
+  // In blood flow, player stays active (won flag stays false)
+
+  updateScoreDisplay();
+
+  if (wall.length === 0) { endGame(); return; }
+
+  if (gameMode === 'xuezhan') {
+    const activeCount = players.filter(x => !x.won).length;
+    if (activeCount <= 1) { endGame(); return; }
+  }
+}
+
+function performKong(playerIdx, tile) {
+  const p = players[playerIdx];
+  // Remove 3 copies from hand
+  let removed = 0;
+  p.hand = p.hand.filter(t => {
+    if (t === tile && removed < 3) { removed++; return false; }
+    return true;
+  });
+  p.melds.push({ type: 'kong', tiles: [tile, tile, tile, tile] });
+  // Draw replacement tile from end of wall
+  if (wall.length > 0) {
+    drawnTile = wall.pop();
+    currentPlayer = playerIdx;
+  }
+  reactionQueue = [];
+  lastDiscard = null;
+}
+
+function performPong(playerIdx, tile) {
+  const p = players[playerIdx];
+  let removed = 0;
+  p.hand = p.hand.filter(t => {
+    if (t === tile && removed < 2) { removed++; return false; }
+    return true;
+  });
+  p.melds.push({ type: 'pong', tiles: [tile, tile, tile] });
+  currentPlayer = playerIdx;
+  drawnTile = null;
+  skipDraw = true;
+  reactionQueue = [];
+  lastDiscard = null;
+}
+
+function performChi(playerIdx, tile, chiTiles) {
+  const p = players[playerIdx];
+  for (const ct of chiTiles) {
+    const idx = p.hand.indexOf(ct);
+    if (idx >= 0) p.hand.splice(idx, 1);
+  }
+  const meldTiles = [...chiTiles, tile].sort((a, b) => a - b);
+  p.melds.push({ type: 'chi', tiles: meldTiles });
+  currentPlayer = playerIdx;
+  drawnTile = null;
+  skipDraw = true;
+  reactionQueue = [];
+  lastDiscard = null;
+}
+
+function advanceToNextActivePlayer() {
+  for (let i = 0; i < 4; i++) {
+    currentPlayer = (currentPlayer + 1) % 4;
+    // In blood battle, skip won players. In blood flow, everyone keeps playing.
+    if (gameMode === 'xuezhan' && players[currentPlayer].won) continue;
+    break;
+  }
+}
+
+function checkGameEnd() {
+  if (wall.length === 0) { endGame(); return true; }
+  if (gameMode === 'xuezhan') {
+    const active = players.filter(x => !x.won);
+    if (active.length <= 1) { endGame(); return true; }
+  }
+  return false;
+}
+
+// Main entry: start a player's action (they have just drawn a tile or need to discard after pong/chi)
+function startPlayerAction(playerIdx) {
+  if (gamePhase === 'gameover') return;
+
+  // If drawnTile is null, player normally draws first
+  // Exception: after pong/chi, skipDraw is true - player discards from existing hand
+  if (drawnTile === null && !skipDraw) {
+    if (wall.length === 0) { endGame(); updateUI(); return; }
+    drawnTile = wall.pop();
+    updateWallDisplay();
+  }
+  skipDraw = false;
+
+  // Check self-drawn win (tsumo)
+  if (canWin(players[playerIdx].hand, players[playerIdx].melds, drawnTile)) {
+    if (playerIdx === 0) {
+      waitingForHuman = true; // Wait for human to decide 自摸 or discard
+      humanActionTile = null;
+      updateUI();
+      return;
+    } else {
+      // AI decides: always take the win
+      players[playerIdx].hand.push(drawnTile);
+      players[playerIdx].hand.sort((a, b) => a - b);
+      drawnTile = null;
+      performHu(playerIdx, true);
+      if (gamePhase === 'gameover') { updateUI(); return; }
+      if (checkGameEnd()) { updateUI(); return; }
+      // After hu in blood flow, or if AI missed hu (unlikely), continue
+      drawnTile = null;
+      advanceToNextActivePlayer();
+      startPlayerAction(currentPlayer);
+      updateUI();
+      return;
+    }
+  }
+
+  // No tsumo - player must discard
+  if (playerIdx === 0) {
+    waitingForHuman = false;
+    updateUI();
+    return; // Wait for human click
+  } else {
+    // AI discards
+    const disc = aiSelectDiscard(playerIdx);
+    finalizeDiscard(playerIdx, disc);
+  }
+}
+
+function finalizeDiscard(playerIdx, tile) {
+  players[playerIdx].discardPile.push(tile);
+  lastDiscard = { player: playerIdx, tile };
+  drawnTile = null;
+
+  // Check reactions from all other active players
+  const reactions = getReactions(playerIdx, tile);
+  if (reactions.length > 0) {
+    reactionQueue = reactions;
+    const humanReaction = reactions.find(r => r.playerIdx === 0);
+    if (humanReaction) {
+      waitingForHuman = true;
+      humanActionTile = tile;
+      updateUI();
+      return;
+    } else {
+      // Process AI reactions
+      processAIReactions();
+      return;
+    }
+  }
+
+  // No reactions - advance to next player
+  advanceToNextActivePlayer();
+  if (checkGameEnd()) { updateUI(); return; }
+  startPlayerAction(currentPlayer);
+  updateUI();
+}
+
+function processAIReactions() {
+  if (reactionQueue.length === 0 || gamePhase === 'gameover') {
+    advanceToNextActivePlayer();
+    if (!checkGameEnd()) startPlayerAction(currentPlayer);
+    updateUI();
+    return;
+  }
+
+  // Take the first (highest priority) reaction's decision
+  const r = reactionQueue[0];
+  if (r.playerIdx === 0) {
+    // Should have been caught earlier in finalizeDiscard
+    reactionQueue = [];
+    advanceToNextActivePlayer();
+    if (!checkGameEnd()) startPlayerAction(currentPlayer);
+    updateUI();
+    return;
+  }
+
+  const action = aiDecideReaction(r.playerIdx, r.actions, lastDiscard.tile);
+
+  if (action === 'pass') {
+    // This AI passes, check next in queue
+    reactionQueue.splice(0, 1);
+    processAIReactions();
+    return;
+  }
+
+  if (action === 'hu') {
+    players[r.playerIdx].hand.push(lastDiscard.tile);
+    players[r.playerIdx].hand.sort((a, b) => a - b);
+    performHu(r.playerIdx, false);
+    if (gamePhase === 'gameover') { updateUI(); return; }
+    reactionQueue = [];
+    if (checkGameEnd()) { updateUI(); return; }
+    // In blood flow, the winner on the left still needs to discard
+    // Advance to next active player
+    advanceToNextActivePlayer();
+    if (!checkGameEnd()) startPlayerAction(currentPlayer);
+    updateUI();
+    return;
+  }
+
+  if (action === 'kong') {
+    performKong(r.playerIdx, lastDiscard.tile);
+    reactionQueue = [];
+    // After kong, this player has drawn replacement, must discard now
+    startPlayerAction(r.playerIdx);
+    updateUI();
+    return;
+  }
+
+  if (action === 'pong') {
+    performPong(r.playerIdx, lastDiscard.tile);
+    reactionQueue = [];
+    // This player must now discard (without drawing)
+    startPlayerAction(r.playerIdx);
+    updateUI();
+    return;
+  }
+
+  if (action === 'chi') {
+    const tile = lastDiscard.tile;
+    const s = tileSuit(tile), r = tileRank(tile);
+    const counts = new Array(27).fill(0);
+    for (const t of players[r.playerIdx].hand) counts[t]++;
+    let chiTiles = [];
+    if (r >= 3 && counts[tileTypeId(s, r - 2)] >= 1 && counts[tileTypeId(s, r - 1)] >= 1) {
+      chiTiles = [tileTypeId(s, r - 2), tileTypeId(s, r - 1)];
+    } else if (r >= 2 && r <= 8 && counts[tileTypeId(s, r - 1)] >= 1 && counts[tileTypeId(s, r + 1)] >= 1) {
+      chiTiles = [tileTypeId(s, r - 1), tileTypeId(s, r + 1)];
+    } else if (r <= 7 && counts[tileTypeId(s, r + 1)] >= 1 && counts[tileTypeId(s, r + 2)] >= 1) {
+      chiTiles = [tileTypeId(s, r + 1), tileTypeId(s, r + 2)];
+    }
+    performChi(r.playerIdx, tile, chiTiles);
+    reactionQueue = [];
+    startPlayerAction(r.playerIdx);
+    updateUI();
+    return;
+  }
+
+  // Fallback
+  reactionQueue.splice(0, 1);
+  processAIReactions();
+}
+
+function nextTurn() {
+  // Legacy wrapper - used for initial game start
+  advanceToNextActivePlayer();
+  if (checkGameEnd()) { updateUI(); return; }
+  startPlayerAction(currentPlayer);
+  updateUI();
+}
+
+function calculateFan(playerIdx) {
+  const p = players[playerIdx];
+  const hand = [...p.hand];
+  if (drawnTile !== null && currentPlayer === playerIdx) hand.push(drawnTile);
+  const counts = new Array(27).fill(0);
+  for (const t of hand) counts[t]++;
+
+  let fan = 1; // base
+
+  // Check 对对胡 (all triplets + pair, no sequences)
+  // Simplified: check if hand has any sequence potential (unlikely to be 对对胡 in normal play)
+  let hasSequence = false;
+  for (let s = 0; s < 3; s++) {
+    for (let r = 1; r <= 7; r++) {
+      if (counts[tileTypeId(s, r)] >= 1 && counts[tileTypeId(s, r + 1)] >= 1 && counts[tileTypeId(s, r + 2)] >= 1) {
+        hasSequence = true;
+      }
+    }
+  }
+  if (!hasSequence) fan += 1; // 对对胡 +1
+
+  // Check 清一色 (only one suit)
+  let suitCount = 0;
+  for (let s = 0; s < 3; s++) {
+    let has = false;
+    for (let r = 0; r < 9; r++) if (counts[SUIT_START[s] + r] > 0) has = true;
+    if (has) suitCount++;
+  }
+  // Also check melds
+  for (const m of p.melds) {
+    for (const t of m.tiles) {
+      const ts = tileSuit(t);
+      let has = false;
+      for (let r = 0; r < 9; r++) if (counts[SUIT_START[ts] + r] > 0) has = true;
+      // Add suit if meld has it
+      if (!has) suitCount++; // This is approximate
+    }
+  }
+  if (suitCount <= 1) fan += 2; // 清一色 +2
+
+  // 杠加分
+  for (const m of p.melds) if (m.type === 'kong') fan += 1;
+
+  return fan;
+}
+
+function endGame() {
+  gamePhase = 'gameover';
+  gameCount++;
+  let msg = '🏁 本局结束！';
+  for (let i = 0; i < 4; i++) {
+    if (players[i].score > 0) msg += '\n' + players[i].name + ': +' + players[i].score + '番';
+  }
+  showToast(msg);
+  updateUI();
+}
+
+// ================================================================
+//  HUMAN INTERACTION
+// ================================================================
+function humanDiscard(tileIdx) {
+  if (gamePhase !== 'playing') return;
+  // Block if waiting for reaction to someone else's discard
+  if (waitingForHuman && humanActionTile !== null) return;
+  if (currentPlayer !== 0) return;
+
+  const disc = humanSelectDiscard(tileIdx);
+  selectedHandIdx = -1;
+  finalizeDiscard(0, disc);
+  updateUI();
+}
+
+function humanTsumo() {
+  if (!waitingForHuman || currentPlayer !== 0) return;
+  // Merge drawn tile into hand for win
+  players[0].hand.push(drawnTile);
+  players[0].hand.sort((a, b) => a - b);
+  drawnTile = null;
+  waitingForHuman = false;
+  performHu(0, true);
+  if (gamePhase === 'gameover') { updateUI(); return; }
+  if (checkGameEnd()) { updateUI(); return; }
+  if (gameMode === 'xuezhan' && players[0].won) {
+    // Blood battle: human won and exits
+    advanceToNextActivePlayer();
+    if (!checkGameEnd()) startPlayerAction(currentPlayer);
+    updateUI();
+    return;
+  }
+  // Blood flow: human stays in game, discard from hand
+  skipDraw = true;
+  startPlayerAction(0);
+  updateUI();
+}
+
+function humanReaction(action) {
+  if (!waitingForHuman) return;
+  const tile = humanActionTile;
+
+  if (action === 'hu') {
+    players[0].hand.push(tile);
+    players[0].hand.sort((a, b) => a - b);
+    performHu(0, false);
+    waitingForHuman = false;
+    humanActionTile = null;
+    if (gamePhase === 'gameover') { updateUI(); return; }
+    reactionQueue = [];
+    if (checkGameEnd()) { updateUI(); return; }
+    if (gameMode === 'xuezhan' && players[0].won) {
+      advanceToNextActivePlayer();
+      if (!checkGameEnd()) startPlayerAction(currentPlayer);
+      updateUI();
+      return;
+    }
+    // Blood flow: deal with continuation
+    advanceToNextActivePlayer();
+    if (!checkGameEnd()) startPlayerAction(currentPlayer);
+    updateUI();
+    return;
+  }
+
+  if (action === 'kong') {
+    performKong(0, tile);
+    waitingForHuman = false;
+    humanActionTile = null;
+    reactionQueue = [];
+    startPlayerAction(0);
+    updateUI();
+    return;
+  }
+
+  if (action === 'pong') {
+    performPong(0, tile);
+    waitingForHuman = false;
+    humanActionTile = null;
+    reactionQueue = [];
+    startPlayerAction(0);
+    updateUI();
+    return;
+  }
+
+  if (action === 'chi') {
+    const s = tileSuit(tile), r = tileRank(tile);
+    const counts = new Array(27).fill(0);
+    for (const t of players[0].hand) counts[t]++;
+    let chiTiles = null;
+    if (r >= 3 && counts[tileTypeId(s, r - 2)] >= 1 && counts[tileTypeId(s, r - 1)] >= 1) {
+      chiTiles = [tileTypeId(s, r - 2), tileTypeId(s, r - 1)];
+    } else if (r >= 2 && r <= 8 && counts[tileTypeId(s, r - 1)] >= 1 && counts[tileTypeId(s, r + 1)] >= 1) {
+      chiTiles = [tileTypeId(s, r - 1), tileTypeId(s, r + 1)];
+    } else if (r <= 7 && counts[tileTypeId(s, r + 1)] >= 1 && counts[tileTypeId(s, r + 2)] >= 1) {
+      chiTiles = [tileTypeId(s, r + 1), tileTypeId(s, r + 2)];
+    }
+    if (chiTiles) performChi(0, tile, chiTiles);
+    waitingForHuman = false;
+    humanActionTile = null;
+    reactionQueue = [];
+    startPlayerAction(0);
+    updateUI();
+    return;
+  }
+
+  // Pass
+  waitingForHuman = false;
+  humanActionTile = null;
+  reactionQueue = reactionQueue.filter(r => r.playerIdx !== 0);
+
+  if (reactionQueue.length > 0) {
+    processAIReactions();
+  } else {
+    advanceToNextActivePlayer();
+    if (!checkGameEnd()) startPlayerAction(currentPlayer);
+  }
+  updateUI();
+}
+
+// ================================================================
+//  CANVAS RENDERING
+// ================================================================
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const w = Math.min(window.innerWidth * 0.95, 750);
+  canvas.width = w;
+  canvas.height = w * 0.82;
+}
+resizeCanvas();
+window.addEventListener('resize', () => { resizeCanvas(); drawAll(); });
+
+// Tile drawing constants (scaled to canvas)
+function tw() { return Math.min(canvas.width / 21, 38); } // tile width
+function th() { return tw() * 1.4; } // tile height
+
+function drawTile(x, y, typeId, faceUp, highlight, tiny) {
+  const w = tiny ? tw() * 0.65 : tw();
+  const h = tiny ? th() * 0.65 : th();
+  const r = 3;
+
+  if (!faceUp) {
+    // Face down tile
+    ctx.fillStyle = '#1a5276';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#0d3b66';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    // Inner pattern
+    ctx.fillStyle = '#1e6fa0';
+    ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
+    ctx.strokeStyle = '#2980b9';
+    ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+    return;
+  }
+
+  // Face up tile
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.fillRect(x + 2, y + 2, w, h);
+
+  // Tile body
+  const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+  grad.addColorStop(0, '#fffef5');
+  grad.addColorStop(0.5, '#faf5e8');
+  grad.addColorStop(1, '#f0e8d0');
+  ctx.fillStyle = grad;
+  ctx.fillRect(x, y, w, h);
+
+  // Border
+  ctx.strokeStyle = highlight ? '#e53935' : '#a09080';
+  ctx.lineWidth = highlight ? 2.5 : 1;
+  ctx.strokeRect(x, y, w, h);
+
+  if (highlight) {
+    ctx.fillStyle = 'rgba(255,215,0,0.3)';
+    ctx.fillRect(x, y, w, h);
+  }
+
+  // Rank number and suit
+  const rank = tileRank(typeId);
+  const suit = tileSuit(typeId);
+  const fontSize = tiny ? w * 0.45 : w * 0.48;
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Suit color
+  const colors = ['#c62828', '#1565c0', '#2e7d32']; // 万红, 筒蓝, 条绿
+  ctx.fillStyle = colors[suit];
+  ctx.font = `bold ${fontSize}px "KaiTi","STKaiti","Microsoft YaHei"`;
+
+  const cx = x + w / 2, cy = y + h / 2;
+  if (typeId === null || typeId === undefined) {
+    ctx.fillText('?', cx, cy);
+  } else {
+    ctx.fillText(rank, cx - fontSize * 0.2, cy - fontSize * 0.15);
+    // Suit indicator
+    const suitSymbols = ['万', '筒', '条'];
+    ctx.font = `${fontSize * 0.55}px "KaiTi","STKaiti","Microsoft YaHei"`;
+    ctx.fillText(suitSymbols[suit], cx + fontSize * 0.35, cy + fontSize * 0.35);
+  }
+}
+
+function drawPlayerHand(playerIdx, isHuman) {
+  const p = players[playerIdx];
+  const { tiles, drawnIdx } = currentHandDisplay(playerIdx);
+  const tileCount = tiles.length;
+  const w = tw(), h = th();
+  const gap = isHuman ? 2 : 1;
+
+  if (isHuman) {
+    // Bottom - horizontal, face up
+    const totalW = tileCount * (w + gap);
+    const startX = (canvas.width - totalW) / 2;
+    const startY = canvas.height - h - 10;
+
+    for (let i = 0; i < tileCount; i++) {
+      const x = startX + i * (w + gap);
+      const y = startY;
+      const highlight = (i === selectedHandIdx) || (i === drawnIdx && selectedHandIdx < 0);
+      drawTile(x, y, tiles[i], true, highlight, false);
+    }
+  } else {
+    // AI - show face down horizontally at top, or vertically on sides
+    const compact = tw() * 0.65;
+    // Show count + some tiles face down
+    ctx.fillStyle = '#5d4037';
+    ctx.font = `bold ${compact * 0.7}px "Microsoft YaHei"`;
+    ctx.textAlign = 'center';
+    ctx.fillText(p.name + ' · ' + tileCount + '张', canvas.width / 2, h + 15);
+
+    // Show some tiles face down
+    const showCount = Math.min(tileCount, 10);
+    const totalW = showCount * (compact + 1);
+    const startX = (canvas.width - totalW) / 2;
+    for (let i = 0; i < showCount; i++) {
+      drawTile(startX + i * (compact + 1), 6, 0, false, false, true);
+    }
+  }
+}
+
+function drawSidePlayers() {
+  const compact = tw() * 0.6;
+  // Right (player 1) - vertical face down
+  ctx.save();
+  ctx.translate(canvas.width - compact - 10, canvas.height / 2);
+  ctx.rotate(Math.PI / 2);
+  const p1 = players[1];
+  ctx.fillStyle = '#5d4037';
+  ctx.font = `bold ${compact * 0.7}px "Microsoft YaHei"`;
+  ctx.textAlign = 'center';
+  ctx.fillText(p1.name + ' · ' + p1.hand.length + '张', 0, -compact - 5);
+  for (let i = 0; i < Math.min(p1.hand.length, 8); i++) {
+    drawTile(i * (compact + 1), 0, 0, false, false, true);
+  }
+  ctx.restore();
+
+  // Left (player 3) - vertical face down
+  ctx.save();
+  ctx.translate(compact + 10, canvas.height / 2);
+  ctx.rotate(-Math.PI / 2);
+  const p3 = players[3];
+  ctx.fillStyle = '#5d4037';
+  ctx.font = `bold ${compact * 0.7}px "Microsoft YaHei"`;
+  ctx.textAlign = 'center';
+  ctx.fillText(p3.name + ' · ' + p3.hand.length + '张', 0, -compact - 5);
+  for (let i = 0; i < Math.min(p3.hand.length, 8); i++) {
+    drawTile(i * (compact + 1), 0, 0, false, false, true);
+  }
+  ctx.restore();
+}
+
+function drawDiscards() {
+  const w = tw() * 0.7, h = th() * 0.7;
+  const centerX = canvas.width / 2, centerY = canvas.height / 2;
+
+  // Draw discard piles in a cross pattern around center
+  const positions = [
+    { dx: w * 0.6, dy: h * 1.2, dir: 'right' },  // player 0 (human) discards go up
+    { dx: -w * 1.5, dy: -h * 0.5, dir: 'down' },  // player 1 (right) discards go left
+    { dx: -w * 0.5, dy: -h * 1.8, dir: 'left' },   // player 2 (top) discards go down
+    { dx: w * 1.2, dy: 0, dir: 'up' },             // player 3 (left) discards go right
+  ];
+
+  for (let i = 0; i < 4; i++) {
+    const pile = players[i].discardPile;
+    const startX = centerX + positions[i].dx;
+    const startY = centerY + positions[i].dy - h * 0.5;
+
+    for (let j = 0; j < pile.length; j++) {
+      const row = Math.floor(j / 6);
+      const col = j % 6;
+      drawTile(startX + col * w, startY + row * h, pile[j], true, false, true);
+    }
+  }
+
+  // Highlight last discard
+  if (lastDiscard) {
+    const pile = players[lastDiscard.player].discardPile;
+    if (pile.length > 0) {
+      const lastIdx = pile.length - 1;
+      const row = Math.floor(lastIdx / 6);
+      const col = lastIdx % 6;
+      const lx = centerX + positions[lastDiscard.player].dx + col * w;
+      const ly = centerY + positions[lastDiscard.player].dy - h * 0.5 + row * h;
+      ctx.strokeStyle = '#ff9800';
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(lx - 1, ly - 1, w + 2, h + 2);
+    }
+  }
+}
+
+function drawMelds() {
+  const w = tw() * 0.7, h = th() * 0.7;
+  // Draw melds near each player
+  for (let i = 0; i < 4; i++) {
+    const p = players[i];
+    if (p.melds.length === 0) continue;
+    let baseX, baseY;
+    if (i === 0) { baseX = 10; baseY = canvas.height - h - 10 - th() - 20; }
+    else if (i === 2) { baseX = canvas.width - 10 - w * 4; baseY = 10; }
+    else if (i === 1) { baseX = canvas.width - 40; baseY = canvas.height / 2 - h; }
+    else { baseX = 10; baseY = canvas.height / 2 - h; }
+
+    for (let j = 0; j < p.melds.length; j++) {
+      const m = p.melds[j];
+      const mx = i <= 2 ? baseX + j * w * 4 : baseX;
+      const my = i <= 2 ? baseY : baseY + j * h;
+      for (let k = 0; k < m.tiles.length; k++) {
+        drawTile(mx + k * w, my, m.tiles[k], true, false, true);
+      }
+    }
+  }
+}
+
+function drawCenterInfo() {
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  ctx.fillStyle = '#8d6e63';
+  ctx.font = `bold ${tw() * 0.55}px "Microsoft YaHei"`;
+  ctx.textAlign = 'center';
+  ctx.fillText('牌墙: ' + wall.length + '张', cx, cy + th() * 1.3);
+}
+
+function drawAll() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Board bg
+  ctx.fillStyle = '#2e5a3b';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Inner mat
+  ctx.fillStyle = '#3d7a4a';
+  ctx.fillRect(15, 15, canvas.width - 30, canvas.height - 30);
+
+  // Players
+  drawPlayerHand(0, true);  // human bottom
+  drawPlayerHand(2, false); // AI top
+  drawSidePlayers();        // right + left
+  drawDiscards();
+  drawMelds();
+  drawCenterInfo();
+
+  // Game over overlay
+  if (gamePhase === 'gameover') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffd54f';
+    ctx.font = `bold ${tw() * 0.9}px "Microsoft YaHei"`;
+    ctx.textAlign = 'center';
+    ctx.fillText('本局结束', canvas.width / 2, canvas.height / 2 - 20);
+    ctx.fillText('点击"新开局"继续', canvas.width / 2, canvas.height / 2 + 30);
+  }
+}
+
+// ================================================================
+//  UI UPDATE
+// ================================================================
+function updateUI() {
+  drawAll();
+  updateActionBar();
+  updateInfoText();
+  updateScoreDisplay();
+  updateWallDisplay();
+}
+
+function updateActionBar() {
+  const bar = document.getElementById('actionBar');
+  bar.innerHTML = '';
+
+  // If game over, show new game button
+  if (gamePhase === 'gameover') {
+    bar.innerHTML = '<button class="btn primary" onclick="startNewGame()">🔄 新开局</button>';
+    return;
+  }
+
+  // If waiting for human reaction (to a discard)
+  if (waitingForHuman && humanActionTile !== null) {
+    const r = reactionQueue.find(r => r.playerIdx === 0);
+    if (r) {
+      bar.innerHTML = '<span style="color:#c62828;font-weight:bold;">有人打了 ' + tileName(humanActionTile) + '，你的选择：</span>';
+      for (const a of ['hu', 'kong', 'pong', 'chi', 'pass']) {
+        if (a === 'pass' || r.actions.includes(a)) {
+          const labels = { hu: '🀄 胡!', kong: '杠', pong: '碰', chi: '吃', pass: '过' };
+          const cls = a === 'hu' ? 'btn win' : a === 'pass' ? 'btn' : 'btn claim';
+          const btn = document.createElement('button');
+          btn.className = cls;
+          btn.textContent = labels[a];
+          btn.onclick = () => humanReaction(a);
+          bar.appendChild(btn);
+        }
+      }
+    }
+    return;
+  }
+
+  // If human's turn with self-draw possibility
+  if (waitingForHuman && humanActionTile === null && currentPlayer === 0 && gamePhase === 'playing') {
+    if (drawnTile !== null && canWin(players[0].hand, players[0].melds, drawnTile)) {
+      const btn = document.createElement('button');
+      btn.className = 'btn win';
+      btn.textContent = '🎉 自摸!';
+      btn.onclick = () => humanTsumo();
+      bar.appendChild(btn);
+    }
+    bar.innerHTML += '<span style="color:#5d4037;font-weight:bold;">请点击手牌出牌</span>';
+    return;
+  }
+
+  // Normal human turn (discard)
+  if (currentPlayer === 0 && !waitingForHuman && gamePhase === 'playing') {
+    if (drawnTile !== null && canWin(players[0].hand, players[0].melds, drawnTile)) {
+      const btn = document.createElement('button');
+      btn.className = 'btn win';
+      btn.textContent = '🎉 自摸!';
+      btn.onclick = () => humanTsumo();
+      bar.appendChild(btn);
+    }
+    bar.innerHTML += '<span style="color:#5d4037;font-weight:bold;">请点击手牌出牌</span>';
+    return;
+  }
+
+  // AI turn indicator
+  if (currentPlayer !== 0 && !waitingForHuman && gamePhase === 'playing') {
+    bar.innerHTML = '<span style="color:#a1887f;">' + players[currentPlayer].name + ' 思考中...</span>';
+  }
+}
+
+function updateInfoText() {
+  const el = document.getElementById('infoText');
+  const p0 = players[0];
+  if (gamePhase === 'gameover') {
+    el.textContent = '本局结束 · 点击"新开局"开始下一局';
+    return;
+  }
+  if (waitingForHuman && humanActionTile !== null) {
+    el.textContent = p0.name + ': 可以 碰/吃/杠/胡 或 过 · 缺' + SUIT_NAMES[p0.missingSuit];
+  } else if (waitingForHuman && humanActionTile === null && currentPlayer === 0) {
+    el.textContent = p0.name + ': 可自摸！点击自摸或选牌出牌 · 缺' + SUIT_NAMES[p0.missingSuit];
+  } else if (currentPlayer === 0 && !waitingForHuman) {
+    el.textContent = '你的回合 · 缺' + SUIT_NAMES[p0.missingSuit] + ' · 点击手牌出牌';
+  } else {
+    const cp = players[currentPlayer];
+    el.textContent = cp.name + ' 思考中...' + (cp.won ? '(已胡)' : '');
+  }
+}
+
+function updateScoreDisplay() {
+  for (let i = 0; i < 4; i++) {
+    document.getElementById('score' + i).textContent = totalScores[i];
+  }
+}
+
+function updateWallDisplay() {
+  document.getElementById('wallCount').textContent = wall.length;
+}
+
+// ================================================================
+//  CANVAS CLICK
+// ================================================================
+canvas.addEventListener('click', (e) => {
+  if (gamePhase !== 'playing') return;
+  if (waitingForHuman && humanActionTile !== null) return; // reacting to discard
+  if (currentPlayer !== 0) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+
+  const { tiles } = currentHandDisplay(0);
+  const tileCount = tiles.length;
+  const w = tw(), h = th();
+  const gap = 2;
+  const totalW = tileCount * (w + gap);
+  const startX = (canvas.width - totalW) / 2;
+  const startY = canvas.height - h - 10;
+
+  for (let i = 0; i < tileCount; i++) {
+    const x = startX + i * (w + gap);
+    const y = startY;
+    if (mx >= x && mx <= x + w && my >= y && my <= y + h) {
+      selectedHandIdx = i;
+      drawAll();
+      // Double-click to discard
+      if (selectedHandIdx >= 0) {
+        humanDiscard(selectedHandIdx);
+      }
+      return;
+    }
+  }
+});
+
+// ================================================================
+//  GAME START / BUTTONS
+// ================================================================
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+function startNewGame() {
+  initPlayers();
+  dealTiles();
+  gamePhase = 'playing';
+  waitingForHuman = false;
+  humanActionTile = null;
+  selectedHandIdx = -1;
+  reactionQueue = [];
+  lastDiscard = null;
+  updateWallDisplay();
+  document.getElementById('gameInfo').textContent =
+    (gameMode === 'xueliu' ? '血流成河' : '血战到底') + ' · 第' + (gameCount + 1) + '局';
+
+  // Dealer (human) already has drawnTile from deal, start their action
+  if (currentPlayer === 0) {
+    startPlayerAction(0);
+  } else {
+    setTimeout(() => { startPlayerAction(currentPlayer); updateUI(); }, 300);
+  }
+  updateUI();
+}
+
+document.getElementById('btnXueLiu').addEventListener('click', () => {
+  gameMode = 'xueliu';
+  document.getElementById('btnXueLiu').classList.add('active');
+  document.getElementById('btnXueZhan').classList.remove('active');
+  totalScores = [0, 0, 0, 0];
+  gameCount = 0;
+  startNewGame();
+});
+
+document.getElementById('btnXueZhan').addEventListener('click', () => {
+  gameMode = 'xuezhan';
+  document.getElementById('btnXueZhan').classList.add('active');
+  document.getElementById('btnXueLiu').classList.remove('active');
+  totalScores = [0, 0, 0, 0];
+  gameCount = 0;
+  startNewGame();
+});
+
+// ================================================================
+//  AI TURN AUTOMATION
+// ================================================================
+function runAITurn() {
+  if (gamePhase !== 'playing') return;
+  if (waitingForHuman) return;
+  if (currentPlayer !== 0 && !players[currentPlayer].won) {
+    startPlayerAction(currentPlayer);
+    updateUI();
+    // Continue if still AI's turn
+    if (gamePhase === 'playing' && !waitingForHuman && currentPlayer !== 0) {
+      setTimeout(() => runAITurn(), 300);
+    }
+  }
+}
+
+// Watch for AI turns after state changes
+const _origUpdateUI = updateUI;
+updateUI = function() {
+  _origUpdateUI();
+  if (gamePhase === 'playing' && !waitingForHuman && currentPlayer !== 0) {
+    setTimeout(() => runAITurn(), 300);
+  }
+};
+
+// ================================================================
+//  INIT
+// ================================================================
+startNewGame();
+</script>
+</body>
+</html>
